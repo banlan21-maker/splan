@@ -31,6 +31,10 @@ WEEKDAYS = {
 }
 WEEKDAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"]
 
+# 버전 정보 (업로드할 때마다 수동으로 업데이트)
+APP_VERSION = "v1.01"
+APP_AUTHOR = "by.banlan"
+
 # ============================================================================
 # Session State 초기화
 # ============================================================================
@@ -1588,26 +1592,37 @@ if __name__ == "__main__":
     # Session State 초기화
     init_session_state()
     
-    # 상단 메뉴
-    selected = option_menu(
-        menu_title=None,
-        options=["홈(Home)", "기초정보 관리", "스케줄링 메인", "공정 설정(Admin)"],
-        icons=["house", "cloud-upload", "list-task", "gear"],
-        menu_icon="cast",
-        default_index=0,
-        orientation="horizontal",
-        styles={
-            "container": {"padding": "0!important", "background-color": "#fafafa"},
-            "icon": {"color": "orange", "font-size": "18px"},
-            "nav-link": {
-                "font-size": "16px",
-                "text-align": "center",
-                "margin": "0px",
-                "--hover-color": "#eee",
-            },
-            "nav-link-selected": {"background-color": "#02ab21"},
-        }
-    )
+    # 상단 메뉴와 버전 정보
+    col1, col2 = st.columns([10, 1])
+    
+    with col1:
+        selected = option_menu(
+            menu_title=None,
+            options=["홈(Home)", "기초정보 관리", "스케줄링 메인", "공정 설정(Admin)"],
+            icons=["house", "cloud-upload", "list-task", "gear"],
+            menu_icon="cast",
+            default_index=0,
+            orientation="horizontal",
+            styles={
+                "container": {"padding": "0!important", "background-color": "#fafafa"},
+                "icon": {"color": "orange", "font-size": "18px"},
+                "nav-link": {
+                    "font-size": "16px",
+                    "text-align": "center",
+                    "margin": "0px",
+                    "--hover-color": "#eee",
+                },
+                "nav-link-selected": {"background-color": "#02ab21"},
+            }
+        )
+    
+    with col2:
+        st.markdown(
+            f'<div style="text-align: right; padding-top: 10px; color: #666; font-size: 12px;">'
+            f'{APP_VERSION}<br>{APP_AUTHOR}'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     
     # 페이지 라우팅
     if selected == "홈(Home)":
