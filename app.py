@@ -12,16 +12,7 @@ from streamlit_option_menu import option_menu
 import plotly.graph_objects as go
 import plotly.express as px
 import io
-
-# ============================================================================
-# 페이지 설정
-# ============================================================================
-st.set_page_config(
-    page_title="IronFlow - 생산 스케줄링",
-    page_icon="🚢",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+import json
 
 # ============================================================================
 # 상수 정의
@@ -34,12 +25,32 @@ WEEKDAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"]
 # 버전 정보 (업로드할 때마다 수동으로 업데이트)
 APP_VERSION = "v1.01"
 APP_AUTHOR = "by.banlan"
+DEFAULT_APP_TITLE = "IronFlow - 조선기자재 스마트 스케줄러"
+PROCESS_TYPE_LABELS = {"Duration": "기간", "Milestone": "마일스톤"}
+PROCESS_TYPE_VALUES = {v: k for k, v in PROCESS_TYPE_LABELS.items()}
+
+# ============================================================================
+# 페이지 설정
+# ============================================================================
+st.set_page_config(
+    page_title=DEFAULT_APP_TITLE,
+    page_icon="🚢",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # ============================================================================
 # Session State 초기화
 # ============================================================================
 def init_session_state():
     """Session State 초기화"""
+    if 'company_info' not in st.session_state:
+        st.session_state.company_info = {
+            "company_name": "",
+            "business_number": "",
+            "department": "",
+            "contact": ""
+        }
     if 'global_holidays' not in st.session_state:
         st.session_state.global_holidays = set()
     
@@ -65,6 +76,20 @@ def init_session_state():
     
     if 'project_capa' not in st.session_state:
         st.session_state.project_capa = {}  # Key: (Project_No, Process_Name) 튜플, Value: Monthly_CAPA_Ton
+
+def get_app_title():
+    """회사명 기반 앱 타이틀 반환"""
+    company_name = st.session_state.get("company_info", {}).get("company_name", "").strip()
+    if company_name:
+        return f"{company_name} 자동 생산스케줄 생성기"
+    return DEFAULT_APP_TITLE
+
+def apply_browser_title(title):
+    """브라우저 탭 제목을 동적으로 변경"""
+    st.markdown(
+        f"<script>document.title = {json.dumps(title)};</script>",
+        unsafe_allow_html=True
+    )
 
 # ============================================================================
 # 기본 공정 데이터프레임 생성
@@ -242,8 +267,11 @@ def calculate_backward_schedule(df, processes_df, team_settings, global_holidays
 # ============================================================================
 def main_home():
     """홈 페이지"""
-    st.title("🏠 IronFlow")
-    st.markdown("### 조선기자재 생산 자동 스케줄링 시스템")
+    app_title = get_app_title()
+    st.markdown(
+        f"<h3 style='text-align: left;'>{app_title}</h3>",
+        unsafe_allow_html=True
+    )
     
     st.divider()
     
@@ -267,30 +295,113 @@ def main_home():
     st.divider()
     
     st.markdown("""
-    ### 📖 사용 방법
+    #### 📖 사용 방법
     
-    1. **공정 설정(Admin)**: 시스템에서 사용할 공정을 정의합니다.
-    2. **기초정보 관리**: 엑셀 파일을 업로드하거나 샘플 데이터를 생성합니다.
-    3. **스케줄링 메인**: 휴무일을 설정하고 역산 스케줄을 계산합니다.
+    1. **공정 설정(Admin)**  
+       - 현장에서 실제 사용하는 공정 이름과 순서를 등록합니다.  
+       - Duration(기간) / Milestone(특정일) 타입을 선택해 주세요.  
+       - 팀코드를 지정하면 스케줄링에서 팀별 근무일 설정과 연동됩니다.
     
-    ### 💡 주요 기능
+    2. **기초정보 관리**  
+       - 사이드바의 **양식 다운로드**로 최신 공정이 반영된 템플릿을 받습니다.  
+       - 프로젝트 기본정보(호선/블록/중량/납기일)를 입력하거나 엑셀로 업로드합니다.  
+       - 각 공정의 소요기간(Days)을 입력해 실제 작업 리드타임을 반영합니다.  
+       - 필요 시 **실시간 작업 수정 모드**에서 전체 데이터를 빠르게 수정합니다.
     
-    - ✅ 동적 공정 관리: 공정을 자유롭게 추가/수정/삭제
-    - ✅ 팀별 휴무일 설정: 각 팀의 근무 요일과 휴무일을 개별 설정
-    - ✅ NumPy 가속 계산: 대용량 데이터도 빠르게 처리
-    - ✅ 간트 차트 시각화: 스케줄을 한눈에 확인
+    3. **스케줄링 메인**  
+       - 공통 휴무일과 팀별 근무 요일/휴무일을 설정합니다.  
+       - **스케줄 계산**을 누르면 납기일 기준으로 자동 역산 스케줄이 생성됩니다.  
+       - 결과 표와 간트 차트로 일정 흐름을 확인하고 다운로드할 수 있습니다.
+    
+    #### 💡 주요 기능
+    
+    - ✅ **사업자 정보 & 브랜딩**: 회사명을 입력하면 앱 타이틀에 자동 반영
+    - ✅ **동적 공정 관리**: 공정 추가/수정/삭제가 모든 입력 양식에 즉시 반영
+    - ✅ **팀별 근무 캘린더**: 팀별 근무 요일과 휴무일을 분리 관리
+    - ✅ **자동 역산 스케줄**: 납기일 기준으로 공정별 시작/종료일 자동 계산
+    - ✅ **간트 차트 + 부하율 분석**: 일정 시각화와 CAPA 대비 부하 확인
     """)
 
 def page_admin():
     """공정 설정(Admin) 페이지"""
-    st.title("⚙️ 공정 설정 (Admin)")
+    st.markdown("### ⚙️ 공정 설정 (Admin)")
     st.caption("시스템에서 사용할 공정을 정의하고 관리합니다.")
     
     st.info("💡 공정을 추가/수정/삭제하면 다른 페이지에 즉시 반영됩니다.")
+
+    # 공정 순서 이동(드래그 대체)
+    st.markdown("#### 🧭 공정 순서 이동")
+    if "process_reorder_select_target" in st.session_state:
+        st.session_state.process_reorder_select = st.session_state.pop(
+            "process_reorder_select_target"
+        )
+    processes_df = st.session_state.processes_df.sort_values('Order').reset_index(drop=True)
+    if len(processes_df) > 0:
+        option_labels = [
+            f"{idx + 1}. {row['Process Name']} ({row['Team Code']})"
+            for idx, row in processes_df.iterrows()
+        ]
+        selected_idx = st.selectbox(
+            "이동할 공정 선택",
+            options=list(range(len(option_labels))),
+            format_func=lambda i: option_labels[i],
+            key="process_reorder_select"
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+        moved = False
+        with col1:
+            if st.button("⬆️ 위로", use_container_width=True):
+                if selected_idx > 0:
+                    processes_df.iloc[[selected_idx - 1, selected_idx]] = processes_df.iloc[
+                        [selected_idx, selected_idx - 1]
+                    ].values
+                    selected_idx -= 1
+                    moved = True
+        with col2:
+            if st.button("⬇️ 아래로", use_container_width=True):
+                if selected_idx < len(processes_df) - 1:
+                    processes_df.iloc[[selected_idx, selected_idx + 1]] = processes_df.iloc[
+                        [selected_idx + 1, selected_idx]
+                    ].values
+                    selected_idx += 1
+                    moved = True
+        with col3:
+            if st.button("⤒ 맨 위로", use_container_width=True):
+                if selected_idx > 0:
+                    row = processes_df.iloc[[selected_idx]]
+                    processes_df = pd.concat(
+                        [row, processes_df.drop(index=selected_idx)],
+                        ignore_index=True
+                    )
+                    selected_idx = 0
+                    moved = True
+        with col4:
+            if st.button("⤓ 맨 아래로", use_container_width=True):
+                if selected_idx < len(processes_df) - 1:
+                    row = processes_df.iloc[[selected_idx]]
+                    processes_df = pd.concat(
+                        [processes_df.drop(index=selected_idx), row],
+                        ignore_index=True
+                    )
+                    selected_idx = len(processes_df) - 1
+                    moved = True
+
+        if moved:
+            processes_df['Order'] = range(1, len(processes_df) + 1)
+            st.session_state.processes_df = processes_df
+            st.session_state.process_reorder_select_target = selected_idx
+            st.success("✅ 공정 순서가 변경되었습니다!")
+            st.rerun()
     
-    # 공정 데이터프레임 편집
+    # 공정 데이터프레임 편집 (유형 한글 표시)
+    processes_display_df = st.session_state.processes_df.copy()
+    processes_display_df["Type"] = processes_display_df["Type"].map(
+        lambda v: PROCESS_TYPE_LABELS.get(v, v)
+    )
+
     edited_processes_df = st.data_editor(
-        st.session_state.processes_df,
+        processes_display_df,
         num_rows="dynamic",
         column_config={
             "Process Name": st.column_config.TextColumn(
@@ -300,7 +411,7 @@ def page_admin():
             ),
             "Type": st.column_config.SelectboxColumn(
                 "유형",
-                options=["Duration", "Milestone"],
+                options=list(PROCESS_TYPE_VALUES.keys()),
                 required=True,
                 help="Duration: 기간 공정, Milestone: 특정일 공정"
             ),
@@ -319,6 +430,11 @@ def page_admin():
         },
         hide_index=True,
         key="processes_editor"
+    )
+
+    # 한글 유형을 내부 값으로 변환
+    edited_processes_df["Type"] = edited_processes_df["Type"].map(
+        lambda v: PROCESS_TYPE_VALUES.get(v, v)
     )
     
     # 공정 리스트 업데이트
@@ -347,65 +463,112 @@ def page_admin():
         st.rerun()
     
     # 현재 공정 리스트 표시
-    st.subheader("📋 현재 공정 리스트")
+    st.markdown("#### 📋 현재 공정 리스트")
+    processes_list_df = st.session_state.processes_df.sort_values('Order').copy()
+    processes_list_df["Type"] = processes_list_df["Type"].map(
+        lambda v: PROCESS_TYPE_LABELS.get(v, v)
+    )
+    processes_list_df = processes_list_df.rename(columns={
+        "Process Name": "공정명",
+        "Type": "유형",
+        "Order": "순서",
+        "Team Code": "팀코드"
+    })
     st.dataframe(
-        st.session_state.processes_df.sort_values('Order'),
+        processes_list_df,
         use_container_width=True,
         hide_index=True
     )
 
 def page_input():
     """기초정보 관리 페이지 - 프로젝트 마스터 등록 및 공정 시수 입력"""
-    st.title("📥 기초정보 관리")
+    st.markdown("### 📥 기초정보 관리")
     st.caption("프로젝트 마스터 정보를 등록하고 공정별 소요기간을 입력합니다.")
-    
+
     # ========================================================================
-    # 데이터 입력 양식 다운로드 기능
+    # 사업자 정보 설정
     # ========================================================================
-    st.subheader("📋 표준 입력 양식 다운로드")
-    st.info("💡 아래 버튼을 클릭하여 시스템에 맞는 엑셀 템플릿을 다운로드하세요.")
-    
-    # 최신 공정 설정 데이터프레임 가져오기 (버튼 클릭 시마다 최신 값 반영)
-    processes_df = st.session_state.processes_df.copy()
-    
-    # Order 순서대로 정렬
-    processes_df = processes_df.sort_values('Order').reset_index(drop=True)
-    
-    # 고정 컬럼
-    fixed_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date']
-    
-    # 동적 컬럼 생성 (Order 순서대로)
-    dynamic_columns = []
-    for _, proc_row in processes_df.iterrows():
-        process_name = proc_row['Process Name']
-        process_type = proc_row['Type']
-        
-        if process_type == 'Duration':
-            dynamic_columns.append(f"{process_name}_Days")
-        elif process_type == 'Milestone':
-            dynamic_columns.append(f"{process_name}_Date")
-    
-    # 전체 컬럼 리스트 (고정 컬럼 + 동적 컬럼)
-    template_columns = fixed_columns + dynamic_columns
-    
-    # 빈 데이터프레임 생성
-    template_df = pd.DataFrame(columns=template_columns)
-    
-    # 엑셀 파일 생성 (메모리)
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-        template_df.to_excel(writer, index=False, sheet_name='Input_Data')
-    excel_buffer.seek(0)
-    
-    # 다운로드 버튼
-    st.download_button(
-        label="📥 표준 입력 양식 다운로드 (.xlsx)",
-        data=excel_buffer.getvalue(),
-        file_name="Input_Template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    
-    st.divider()
+    with st.expander("🏢 사업자 정보 설정 (Business Profile)", expanded=False):
+        company_info = st.session_state.get("company_info", {})
+
+        company_name = st.text_input(
+            "회사명 (필수)",
+            value=company_info.get("company_name", ""),
+            placeholder="(주)한국야나세"
+        )
+        business_number = st.text_input(
+            "사업자등록번호",
+            value=company_info.get("business_number", "")
+        )
+        department = st.text_input(
+            "부서명",
+            value=company_info.get("department", "")
+        )
+        contact = st.text_input(
+            "담당자 연락처",
+            value=company_info.get("contact", "")
+        )
+
+        if st.button("정보 저장 및 적용", type="primary"):
+            if not company_name.strip():
+                st.error("회사명은 필수 입력 항목입니다.")
+            else:
+                st.session_state.company_info = {
+                    "company_name": company_name.strip(),
+                    "business_number": business_number.strip(),
+                    "department": department.strip(),
+                    "contact": contact.strip()
+                }
+                st.success("✅ 사업자 정보가 저장되었습니다!")
+                st.rerun()
+
+    # ========================================================================
+    # 데이터 입력 양식 다운로드 기능 (사이드바)
+    # ========================================================================
+    with st.sidebar:
+        st.divider()
+        st.markdown("#### 📂 양식 다운로드")
+        st.caption("아래 버튼을 눌러 최신 공정이 반영된 입력 양식을 받으세요.")
+
+        # 최신 공정 설정 데이터프레임 가져오기 (버튼 클릭 시마다 최신 값 반영)
+        processes_df = st.session_state.processes_df.copy()
+
+        # Order 순서대로 정렬
+        processes_df = processes_df.sort_values('Order').reset_index(drop=True)
+
+        # 고정 컬럼
+        fixed_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date']
+
+        # 동적 컬럼 생성 (Order 순서대로)
+        dynamic_columns = []
+        for _, proc_row in processes_df.iterrows():
+            process_name = proc_row['Process Name']
+            process_type = proc_row['Type']
+
+            if process_type == 'Duration':
+                dynamic_columns.append(f"{process_name}_Days")
+            elif process_type == 'Milestone':
+                dynamic_columns.append(f"{process_name}_Date")
+
+        # 전체 컬럼 리스트 (고정 컬럼 + 동적 컬럼)
+        template_columns = fixed_columns + dynamic_columns
+
+        # 빈 데이터프레임 생성
+        template_df = pd.DataFrame(columns=template_columns)
+
+        # 엑셀 파일 생성 (메모리)
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            template_df.to_excel(writer, index=False, sheet_name='Input_Data')
+        excel_buffer.seek(0)
+
+        # 다운로드 버튼
+        st.download_button(
+            label="📥 표준 입력 양식 다운로드 (.xlsx)",
+            data=excel_buffer.getvalue(),
+            file_name="Input_Template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     
     tab1, tab2, tab3 = st.tabs(["1️⃣ 프로젝트 마스터 등록", "2️⃣ 공정별 소요기간 입력", "3️⃣ 실시간 작업 수정"])
     
@@ -413,7 +576,7 @@ def page_input():
     # 1단계: 프로젝트 마스터 등록
     # ========================================================================
     with tab1:
-        st.subheader("📋 신규 프로젝트 등록")
+        st.markdown("#### 📋 신규 프로젝트 등록")
         st.info("💡 프로젝트의 기본 정보(호선번호, 블록, 중량, 납기일)를 등록합니다.")
         
         sub_tab1, sub_tab2 = st.tabs(["📤 엑셀 업로드", "✏️ 직접 입력"])
@@ -525,7 +688,7 @@ def page_input():
         
         # 등록된 프로젝트 목록 표시
         st.divider()
-        st.subheader("📊 등록된 프로젝트 목록")
+        st.markdown("#### 📊 등록된 프로젝트 목록")
         
         if len(st.session_state.projects_db) == 0:
             st.info("등록된 프로젝트가 없습니다.")
@@ -549,7 +712,7 @@ def page_input():
     # 2단계: 공정별 소요기간 입력
     # ========================================================================
     with tab2:
-        st.subheader("⏱️ 공정별 소요기간 (Lead Time) 계획 수립")
+        st.markdown("#### ⏱️ 공정별 소요기간 (Lead Time) 계획 수립")
         st.info("💡 등록된 프로젝트를 선택하여 각 블록별/공정별 소요 일수를 입력합니다.")
         
         if len(st.session_state.projects_db) == 0:
@@ -655,10 +818,10 @@ def page_input():
                     st.success("✅ 소요기간이 저장되었습니다!")
     
     # ========================================================================
-    # Step 3: 프로젝트별 월 CAPA(생산능력) 설정
+    # 프로젝트별 월 CAPA(생산능력) 설정
     # ========================================================================
     st.divider()
-    st.subheader("📊 Step 3. 프로젝트별 월 목표 생산량(CAPA) 설정")
+    st.markdown("#### 📊 프로젝트별 월 목표 생산량(CAPA) 설정")
     st.info("💡 각 프로젝트별로 공정별 월간 목표 생산량을 설정합니다. 이 값은 부하율 계산의 기준선으로 사용됩니다.")
     
     if len(st.session_state.projects_db) == 0:
@@ -756,7 +919,7 @@ def page_input():
     # 3단계: 실시간 작업 수정 모드
     # ========================================================================
     with tab3:
-        st.subheader("✏️ 실시간 작업 수정 모드")
+        st.markdown("#### ✏️ 실시간 작업 수정 모드")
         st.info("💡 등록된 데이터를 엑셀처럼 편집하여 소요기간을 실시간으로 수정할 수 있습니다.")
         
         if len(st.session_state.projects_db) == 0:
@@ -994,7 +1157,7 @@ def page_input():
     # 데이터 통합 및 최종 데이터프레임 생성
     # ========================================================================
     st.divider()
-    st.subheader("🔄 최종 계산용 데이터 통합")
+    st.markdown("#### 🔄 최종 계산용 데이터 통합")
     
     if len(st.session_state.projects_db) == 0:
         st.info("등록된 프로젝트가 없습니다.")
@@ -1058,7 +1221,7 @@ def page_input():
 
 def page_schedule():
     """스케줄링 메인 페이지"""
-    st.title("📅 스케줄링 메인")
+    st.markdown("### 📅 스케줄링 메인")
     st.caption("휴무일을 설정하고 역산 스케줄을 계산합니다.")
     
     # 데이터 확인
@@ -1071,7 +1234,7 @@ def page_schedule():
         st.header("📅 휴무일 설정")
         
         # 공통 휴무일
-        st.subheader("🌐 공통 휴무일")
+        st.markdown("#### 🌐 공통 휴무일")
         date_list = generate_date_list()
         
         current_global_holidays_str = [
@@ -1093,7 +1256,7 @@ def page_schedule():
         st.divider()
         
         # 팀별 휴무일 설정
-        st.subheader("👥 팀별 설정")
+        st.markdown("#### 👥 팀별 설정")
         
         # Team Code와 Process Name 매핑
         team_options = ["팀 선택"]
@@ -1223,7 +1386,7 @@ def page_schedule():
         df_display = df_scheduled[existing_columns + remaining_columns]
         
         # 결과 테이블
-        st.subheader("📊 스케줄 결과")
+        st.markdown("#### 📊 스케줄 결과")
         st.dataframe(df_display, use_container_width=True, hide_index=True)
         
         # 엑셀 다운로드 버튼 (동일한 형식으로)
@@ -1240,7 +1403,7 @@ def page_schedule():
         )
         
         # 간트 차트
-        st.subheader("📈 간트 차트")
+        st.markdown("#### 📈 간트 차트")
         
         # 간트 차트 데이터 준비
         gantt_data = []
@@ -1407,7 +1570,7 @@ def page_schedule():
         # 공정 부하율 분석
         # ========================================================================
         st.divider()
-        st.subheader("📊 공정 부하율 분석")
+        st.markdown("#### 📊 공정 부하율 분석")
         st.info("💡 각 공정별 작업 물량과 생산능력(CAPA)을 비교하여 부하율을 분석합니다.")
         
         # 1. 기간별 보기 선택
@@ -1591,7 +1754,13 @@ def page_schedule():
 if __name__ == "__main__":
     # Session State 초기화
     init_session_state()
-    
+
+    app_title = get_app_title()
+    apply_browser_title(app_title)
+
+    with st.sidebar:
+        st.markdown(f"### {app_title}")
+
     # 상단 메뉴와 버전 정보
     col1, col2 = st.columns([10, 1])
     
