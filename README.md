@@ -18,7 +18,7 @@
 ### 1. 저장소 클론
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/splan.git
+git clone https://github.com/banlan21-maker/splan.git
 cd splan
 ```
 
