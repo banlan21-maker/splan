@@ -733,27 +733,27 @@ def page_input():
                         df['Fixed_Start_Date'] = None
                         
                     # 데이터 미리보기 (날짜만 표시)
-                        display_df = df.copy()
-                        display_df['Delivery_Date'] = pd.to_datetime(display_df['Delivery_Date']).dt.date
+                    display_df = df.copy()
+                    display_df['Delivery_Date'] = pd.to_datetime(display_df['Delivery_Date']).dt.date
                     if 'Fixed_Start_Date' in display_df.columns:
                         display_df['Fixed_Start_Date'] = pd.to_datetime(
                             display_df['Fixed_Start_Date'], errors='coerce'
                         ).dt.date
-                        st.dataframe(display_df, use_container_width=True, hide_index=True)
-                        
-                        # 프로젝트별로 그룹화하여 저장
-                        if st.button("📥 프로젝트 등록", type="primary", use_container_width=True):
-                            for project_no in df['Project_No'].unique():
-                                project_df = df[df['Project_No'] == project_no].copy()
-                                
-                                # 기존 프로젝트 확인
-                                if project_no in st.session_state.projects_db:
-                                    st.warning(f"⚠️ '{project_no}' 프로젝트가 이미 존재합니다. 덮어쓰기를 진행합니다.")
-                                
-                                st.session_state.projects_db[project_no] = project_df
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # 프로젝트별로 그룹화하여 저장
+                    if st.button("📥 프로젝트 등록", type="primary", use_container_width=True):
+                        for project_no in df['Project_No'].unique():
+                            project_df = df[df['Project_No'] == project_no].copy()
                             
-                            st.success(f"✅ {len(df['Project_No'].unique())}개의 프로젝트가 등록되었습니다!")
-                            st.rerun()
+                            # 기존 프로젝트 확인
+                            if project_no in st.session_state.projects_db:
+                                st.warning(f"⚠️ '{project_no}' 프로젝트가 이미 존재합니다. 덮어쓰기를 진행합니다.")
+                            
+                            st.session_state.projects_db[project_no] = project_df
+                        
+                        st.success(f"✅ {len(df['Project_No'].unique())}개의 프로젝트가 등록되었습니다!")
+                        st.rerun()
                             
                 except Exception as e:
                     st.error(f"❌ 파일 읽기 오류: {str(e)}")
