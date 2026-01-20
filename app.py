@@ -13,6 +13,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 import io
 import json
+from openpyxl import load_workbook
+from openpyxl.comments import Comment
 
 # ============================================================================
 # 상수 정의
@@ -187,6 +189,33 @@ def add_business_days_numpy(end_date, days, work_weekdays, global_holidays, team
     
     return pd.Timestamp(current_date)
 
+def add_business_days_forward_numpy(start_date, days, work_weekdays, global_holidays, team_holidays):
+    """NumPy를 사용하여 주말과 휴일을 제외하고 지정된 일수만큼 날짜를 순산"""
+    if days <= 0:
+        return start_date
+
+    weekmask = work_weekdays_to_weekmask(work_weekdays)
+    holidays = holidays_to_numpy_array(global_holidays, team_holidays)
+    start_date_np = np.datetime64(pd.Timestamp(start_date).date())
+
+    current_date = start_date_np
+    days_counted = 0
+    max_iterations = 365 * 2
+    iteration = 0
+
+    while days_counted < days and iteration < max_iterations:
+        if is_work_day_numpy(current_date, weekmask, holidays):
+            days_counted += 1
+            if days_counted == days:
+                break
+        current_date += np.timedelta64(1, 'D')
+        iteration += 1
+
+    if iteration >= max_iterations:
+        raise ValueError("작업일을 찾을 수 없습니다. 날짜 범위를 확인하세요.")
+
+    return pd.Timestamp(current_date)
+
 # ============================================================================
 # 동적 역산 스케줄링 엔진
 # ============================================================================
@@ -198,6 +227,8 @@ def calculate_backward_schedule(df, processes_df, team_settings, global_holidays
     - global_holidays: 공통 휴무일 세트
     """
     df = df.copy()
+    df["비고"] = ""
+    df["Forward_Delay_Days"] = 0
     
     # 공정 리스트를 Order 순서대로 정렬하고 역순으로 변환
     processes_sorted = processes_df.sort_values('Order').to_dict('records')
@@ -207,6 +238,58 @@ def calculate_backward_schedule(df, processes_df, team_settings, global_holidays
     for idx, row in df.iterrows():
         # 납기일 찾기
         final_date = pd.to_datetime(row["납기일(Final_Date)"])
+
+        fixed_start_date = row.get("Fixed_Start_Date", None)
+        if pd.notna(fixed_start_date) and str(fixed_start_date).strip() != "":
+            df.at[idx, "비고"] = "📅사용자 지정"
+            fixed_start_date = pd.to_datetime(fixed_start_date)
+
+            current_reference_date = fixed_start_date
+            last_end_date = None
+
+            for process in processes_sorted:
+                process_name = process['Process Name']
+                process_type = process['Type']
+                team_code = process['Team Code']
+
+                if process_name == '납기':
+                    df.at[idx, "납기일(Final_Date)"] = final_date
+                    continue
+
+                team_setting = team_settings.get(team_code, {
+                    'work_weekdays': [0, 1, 2, 3, 4, 5],
+                    'team_holidays': set()
+                })
+                work_weekdays = team_setting.get('work_weekdays', [0, 1, 2, 3, 4, 5])
+                team_holidays = team_setting.get('team_holidays', set())
+
+                if process_type == 'Milestone':
+                    milestone_date = add_business_days_forward_numpy(
+                        current_reference_date, 1, work_weekdays, global_holidays, team_holidays
+                    )
+                    df.at[idx, f"{process_name}일"] = milestone_date
+                    last_end_date = milestone_date
+                    current_reference_date = milestone_date + pd.Timedelta(days=1)
+                elif process_type == 'Duration':
+                    days_col = f"{process_name}_Days"
+                    if days_col not in row or pd.isna(row[days_col]):
+                        days = 5
+                    else:
+                        days = int(row[days_col])
+
+                    start_date = pd.to_datetime(current_reference_date)
+                    end_date = add_business_days_forward_numpy(
+                        start_date, days, work_weekdays, global_holidays, team_holidays
+                    )
+
+                    df.at[idx, f"{process_name}_Start"] = start_date
+                    df.at[idx, f"{process_name}_End"] = end_date
+                    last_end_date = end_date
+                    current_reference_date = end_date + pd.Timedelta(days=1)
+
+            if last_end_date is not None and last_end_date > final_date:
+                df.at[idx, "Forward_Delay_Days"] = int((last_end_date - final_date).days)
+            continue
         
         # 역순으로 공정 순회
         current_reference_date = final_date
@@ -537,7 +620,7 @@ def page_input():
         processes_df = processes_df.sort_values('Order').reset_index(drop=True)
 
         # 고정 컬럼
-        fixed_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date']
+        fixed_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date', 'Fixed_Start_Date']
 
         # 동적 컬럼 생성 (Order 순서대로)
         dynamic_columns = []
@@ -560,6 +643,20 @@ def page_input():
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             template_df.to_excel(writer, index=False, sheet_name='Input_Data')
+        excel_buffer.seek(0)
+
+        # Fixed_Start_Date 헤더에 설명 추가
+        workbook = load_workbook(excel_buffer)
+        sheet = workbook["Input_Data"]
+        header_cells = {cell.value: cell for cell in sheet[1] if cell.value}
+        fixed_cell = header_cells.get("Fixed_Start_Date")
+        if fixed_cell is not None:
+            fixed_cell.comment = Comment(
+                "입력 시 해당일부터 첫 공정 시작 (비워두면 납기일 기준 역산)",
+                "System"
+            )
+        excel_buffer = io.BytesIO()
+        workbook.save(excel_buffer)
         excel_buffer.seek(0)
 
         # 다운로드 버튼
@@ -625,12 +722,23 @@ def page_input():
                             st.warning(f"⚠️ 일부 공정 컬럼이 없습니다: {', '.join(missing_dynamic_cols)}")
                             st.info("💡 이 컬럼들은 나중에 추가할 수 있습니다. 필수 컬럼만 있어도 등록 가능합니다.")
                         
-                        # Delivery_Date를 datetime으로 변환
-                        df['Delivery_Date'] = pd.to_datetime(df['Delivery_Date'])
+                    # Delivery_Date를 datetime으로 변환
+                    df['Delivery_Date'] = pd.to_datetime(df['Delivery_Date'])
+
+                    # Fixed_Start_Date 처리 (없으면 None)
+                    if 'Fixed_Start_Date' in df.columns:
+                        df['Fixed_Start_Date'] = pd.to_datetime(df['Fixed_Start_Date'], errors='coerce')
+                        df.loc[df['Fixed_Start_Date'].isna(), 'Fixed_Start_Date'] = None
+                    else:
+                        df['Fixed_Start_Date'] = None
                         
-                        # 데이터 미리보기 (날짜만 표시)
+                    # 데이터 미리보기 (날짜만 표시)
                         display_df = df.copy()
                         display_df['Delivery_Date'] = pd.to_datetime(display_df['Delivery_Date']).dt.date
+                    if 'Fixed_Start_Date' in display_df.columns:
+                        display_df['Fixed_Start_Date'] = pd.to_datetime(
+                            display_df['Fixed_Start_Date'], errors='coerce'
+                        ).dt.date
                         st.dataframe(display_df, use_container_width=True, hide_index=True)
                         
                         # 프로젝트별로 그룹화하여 저장
@@ -869,7 +977,11 @@ def page_input():
                     st.write("")  # 공간 확보
                     st.write("")  # 공간 확보
                     if st.button("✅ 전체 적용", key="apply_uniform_capa"):
-                        capa_df['Monthly CAPA (Ton)'] = uniform_capa
+                        # 선택한 프로젝트의 모든 공정 CAPA를 즉시 저장
+                        for _, proc_row in processes_df.iterrows():
+                            process_name = proc_row['Process Name']
+                            capa_key = (selected_project_capa, process_name)
+                            st.session_state.project_capa[capa_key] = float(uniform_capa)
                         st.success(f"✅ 모든 공정의 CAPA를 {uniform_capa} Ton으로 설정했습니다!")
                         st.rerun()
             
@@ -934,6 +1046,9 @@ def page_input():
                 st.warning("⚠️ 등록된 데이터가 없습니다.")
             else:
                 combined_df = pd.concat(all_projects_data, ignore_index=True)
+
+                if 'Fixed_Start_Date' not in combined_df.columns:
+                    combined_df['Fixed_Start_Date'] = pd.NaT
                 
                 # Duration 공정의 Days 컬럼 추가 (없으면 기본값 5)
                 processes_df = st.session_state.processes_df
@@ -991,7 +1106,7 @@ def page_input():
                     ]
                 
                 # 공정 필터에 따라 표시할 컬럼 결정
-                display_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date']
+                display_columns = ['Project_No', 'Block_No', 'Weight', 'Delivery_Date', 'Fixed_Start_Date']
                 
                 if selected_process_filter != "전체":
                     # 선택한 공정의 Days 컬럼만 추가
@@ -1023,6 +1138,7 @@ def page_input():
                         "Block_No": st.column_config.TextColumn("블록번호", disabled=True),
                         "Weight": st.column_config.NumberColumn("중량(Ton)", disabled=True),
                         "Delivery_Date": st.column_config.DateColumn("납기일", disabled=True),
+                    "Fixed_Start_Date": st.column_config.DateColumn("지정 착수일"),
                     }
                     
                     # 편집 가능한 Days 컬럼 설정
@@ -1072,7 +1188,15 @@ def page_input():
                                     if block_mask.any():
                                         # Days 컬럼 업데이트
                                         for col in edited_df.columns:
-                                            if col.endswith('_Days'):
+                                            if col == "Fixed_Start_Date":
+                                                new_value = edited_row[col]
+                                                if pd.notna(new_value):
+                                                    project_df.loc[block_mask, col] = pd.to_datetime(new_value)
+                                                    changes_made = True
+                                                elif col in project_df.columns:
+                                                    project_df.loc[block_mask, col] = pd.NaT
+                                                    changes_made = True
+                                            elif col.endswith('_Days'):
                                                 if col in project_df.columns:
                                                     old_value = project_df.loc[block_mask, col].iloc[0]
                                                     new_value = edited_row[col]
@@ -1106,7 +1230,12 @@ def page_input():
                                     
                                     if block_mask.any():
                                         for col in edited_df.columns:
-                                            if col.endswith('_Days'):
+                                            if col == "Fixed_Start_Date":
+                                                if pd.notna(new_value):
+                                                    project_df.loc[block_mask, col] = pd.to_datetime(new_value)
+                                                else:
+                                                    project_df.loc[block_mask, col] = pd.NaT
+                                            elif col.endswith('_Days'):
                                                 if col in project_df.columns:
                                                     new_value = edited_row[col]
                                                     if pd.notna(new_value):
@@ -1138,7 +1267,7 @@ def page_input():
                                             final_df[days_col] = 5
                                 
                                 # 최종 컬럼 선택
-                                final_columns = ['프로젝트명', '블록명', '중량(Ton)', '납기일(Final_Date)']
+                                final_columns = ['프로젝트명', '블록명', '중량(Ton)', '납기일(Final_Date)', 'Fixed_Start_Date']
                                 for _, proc_row in processes_df.iterrows():
                                     process_name = proc_row['Process Name']
                                     process_type = proc_row['Type']
@@ -1167,6 +1296,8 @@ def page_input():
         for project_no, project_df in st.session_state.projects_db.items():
             # 컬럼명 변환 (스케줄링 엔진 호환)
             merged_df = project_df.copy()
+            if 'Fixed_Start_Date' not in merged_df.columns:
+                merged_df['Fixed_Start_Date'] = pd.NaT
             merged_df['프로젝트명'] = merged_df['Project_No']
             merged_df['블록명'] = merged_df['Block_No']
             merged_df['중량(Ton)'] = merged_df['Weight']
@@ -1190,7 +1321,7 @@ def page_input():
                         final_df[days_col] = 5
             
             # 최종 컬럼 선택 (스케줄링 엔진에 필요한 컬럼만)
-            final_columns = ['프로젝트명', '블록명', '중량(Ton)', '납기일(Final_Date)']
+            final_columns = ['프로젝트명', '블록명', '중량(Ton)', '납기일(Final_Date)', 'Fixed_Start_Date']
             for _, proc_row in processes_df.iterrows():
                 process_name = proc_row['Process Name']
                 process_type = proc_row['Type']
@@ -1334,6 +1465,68 @@ def page_schedule():
     # 결과 표시
     if 'df_scheduled' in st.session_state and st.session_state.df_scheduled is not None:
         df_scheduled = st.session_state.df_scheduled.copy()
+
+        # ====================================================================
+        # 리스크 분석: 기준일 대비 지연/보관 판단
+        # ====================================================================
+        기준일 = st.date_input(
+            "📅 기준일 설정 (오늘부터 작업한다고 가정할 때)",
+            value=date.today(),
+            key="risk_base_date"
+        )
+        기준일_ts = pd.Timestamp(기준일)
+
+        start_columns = [col for col in df_scheduled.columns if col.endswith("_Start")]
+        if start_columns:
+            df_scheduled["전체_Start_Date"] = df_scheduled[start_columns].min(axis=1)
+        else:
+            df_scheduled["전체_Start_Date"] = pd.to_datetime(df_scheduled.get("납기일(Final_Date)"))
+
+        df_scheduled["Gap(일수)"] = (
+            pd.to_datetime(df_scheduled["전체_Start_Date"]) - 기준일_ts
+        ).dt.days
+
+        def _status_from_gap(gap_days):
+            if pd.isna(gap_days):
+                return "✅ 정상"
+            if gap_days < 0:
+                return "🚨 지연 예상"
+            if gap_days > 0:
+                return "📦 보관 필요"
+            return "✅ 정상"
+
+        df_scheduled["상태"] = df_scheduled["Gap(일수)"].apply(_status_from_gap)
+        df_scheduled["지연/보관일수"] = df_scheduled["Gap(일수)"].abs().fillna(0).astype(int)
+        df_scheduled["예상 납기일"] = ""
+        df_scheduled["착수 여유"] = ""
+
+        delay_mask = df_scheduled["Gap(일수)"] < 0
+        storage_mask = df_scheduled["Gap(일수)"] > 0
+        forward_delay_mask = df_scheduled.get("Forward_Delay_Days", 0) > 0
+
+        df_scheduled.loc[delay_mask, "예상 납기일"] = (
+            pd.to_datetime(df_scheduled.loc[delay_mask, "납기일(Final_Date)"]) +
+            pd.to_timedelta(df_scheduled.loc[delay_mask, "지연/보관일수"], unit="D")
+        )
+        df_scheduled.loc[storage_mask, "착수 여유"] = df_scheduled.loc[storage_mask, "지연/보관일수"].apply(
+            lambda days: f"오늘 안 하고 {days}일 뒤에 시작해도 됨"
+        )
+
+        if forward_delay_mask.any():
+            df_scheduled.loc[forward_delay_mask, "상태"] = "🚨 지연 예상"
+            df_scheduled.loc[forward_delay_mask, "지연/보관일수"] = df_scheduled.loc[
+                forward_delay_mask, "Forward_Delay_Days"
+            ].astype(int)
+            df_scheduled.loc[forward_delay_mask, "예상 납기일"] = (
+                pd.to_datetime(df_scheduled.loc[forward_delay_mask, "납기일(Final_Date)"]) +
+                pd.to_timedelta(df_scheduled.loc[forward_delay_mask, "Forward_Delay_Days"], unit="D")
+            )
+
+        total_delay = int(delay_mask.sum())
+        total_storage = int(storage_mask.sum())
+        st.markdown(
+            f"### 총 지연 블록: {total_delay}개 / 총 보관 필요 블록: {total_storage}개"
+        )
         
         # 1. _Days로 끝나는 컬럼 제외 (입력 시수는 결과표에서 숨김)
         columns_to_keep = [col for col in df_scheduled.columns if not col.endswith("_Days")]
@@ -1342,14 +1535,15 @@ def page_schedule():
         # 날짜 포맷팅 (MM-DD)
         date_columns = [col for col in df_scheduled.columns 
                        if col.endswith("_Start") or col.endswith("_End") 
-                       or col.endswith("일") or col == "PND" or col == "납기일(Final_Date)"]
+                       or col.endswith("일") or col == "PND" or col == "납기일(Final_Date)"
+                       or col == "전체_Start_Date" or col == "예상 납기일"]
         for col in date_columns:
             if col in df_scheduled.columns:
                 df_scheduled[col] = pd.to_datetime(df_scheduled[col]).dt.strftime("%m-%d")
         
         # 2. 컬럼 순서 재정렬 (깔끔한 결과표)
-        # 2-1. 기본 정보
-        column_order = ["프로젝트명", "블록명", "중량(Ton)", "납기일(Final_Date)"]
+        # 2-1. 기본 정보 + 리스크 컬럼
+        column_order = ["상태", "지연/보관일수", "비고", "프로젝트명", "블록명", "중량(Ton)", "납기일(Final_Date)"]
         
         # 2-2. 공정 순서(Order)에 따라 결과 날짜만 표시
         processes_sorted = st.session_state.processes_df.sort_values('Order').to_dict('records')
@@ -1387,7 +1581,16 @@ def page_schedule():
         
         # 결과 테이블
         st.markdown("#### 📊 스케줄 결과")
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        def _row_highlight(row):
+            status = row.get("상태", "")
+            if status == "🚨 지연 예상":
+                return ["background-color: #fde8e8"] * len(row)
+            if status == "📦 보관 필요":
+                return ["background-color: #e8f1ff"] * len(row)
+            return [""] * len(row)
+
+        styled_df = df_display.style.apply(_row_highlight, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
         
         # 엑셀 다운로드 버튼 (동일한 형식으로)
         excel_buffer = io.BytesIO()
@@ -1410,6 +1613,7 @@ def page_schedule():
         for idx, row in st.session_state.df_scheduled.iterrows():
             project_name = row.get("프로젝트명", f"프로젝트{idx}")
             block_name = row.get("블록명", f"블록{idx}")
+            note = row.get("비고", "")
             
             for process in processes_sorted:
                 process_name = process['Process Name']
@@ -1429,7 +1633,8 @@ def page_schedule():
                             'Process': process_name,
                             'Start': start_date,
                             'Finish': end_date,
-                            'Duration': (end_date - start_date).days + 1
+                            'Duration': (end_date - start_date).days + 1,
+                            'Note': note
                         })
                 elif process_type == 'Milestone':
                     milestone_col = f"{process_name}일"
@@ -1440,7 +1645,8 @@ def page_schedule():
                             'Process': process_name,
                             'Start': milestone_date,
                             'Finish': milestone_date,
-                            'Duration': 1
+                            'Duration': 1,
+                            'Note': note
                         })
         
         if gantt_data:
@@ -1461,7 +1667,8 @@ def page_schedule():
                 x_end='Finish',
                 y='Task',
                 color='Process',
-                title='생산 스케줄 간트 차트'
+                title='생산 스케줄 간트 차트',
+                hover_data=['Note']
             )
             
             # 1. 격자선 및 배경 강화
